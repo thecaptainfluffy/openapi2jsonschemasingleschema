@@ -9,15 +9,16 @@ import sys
 from jsonref import JsonRef  # type: ignore
 import click
 
-from openapi2jsonschema.log import info, debug, error
-from openapi2jsonschema.util import (
+from openapi2jsonschemasingleschema.log import info, debug, error
+from openapi2jsonschemasingleschema.util import (
     additional_properties,
-    replace_int_or_string,
-    allow_null_optional_fields,
+    get_full_name,
+    process_specification,
     change_dict_values,
     append_no_duplicates,
+    retrieve_all_references
 )
-from openapi2jsonschema.errors import UnsupportedError
+from openapi2jsonschemasingleschema.errors import UnsupportedError
 
 
 @click.command()
@@ -29,13 +30,22 @@ from openapi2jsonschema.errors import UnsupportedError
     help="Directory to store schema files",
 )
 @click.option(
+    "-n",
+    "--name",
+    default="",
+    help="What is the name of the primary schema that should be used",
+)
+@click.option(
     "-p",
     "--prefix",
-    default="_definitions.json",
+    default="",
     help="Prefix for JSON references (only for OpenAPI versions before 3.0)",
 )
 @click.option(
     "--stand-alone", is_flag=True, help="Whether or not to de-reference JSON schemas"
+)
+@click.option(
+    "--include-references", is_flag=True, help="Whether or not to include references from main schema to JSON schemas"
 )
 @click.option(
     "--expanded", is_flag=True, help="Expand Kubernetes schemas by API version"
@@ -49,7 +59,7 @@ from openapi2jsonschema.errors import UnsupportedError
     help="Prohibits properties not in the schema (additionalProperties: false)",
 )
 @click.argument("schema", metavar="SCHEMA_URL")
-def default(output, schema, prefix, stand_alone, expanded, kubernetes, strict):
+def default(output, schema, name, prefix, stand_alone, include_references, expanded, kubernetes, strict):
     """
     Converts a valid OpenAPI specification into a set of JSON Schema files
     """
@@ -61,6 +71,8 @@ def default(output, schema, prefix, stand_alone, expanded, kubernetes, strict):
             schema = "file://" + os.path.realpath(schema)
         req = urllib.request.Request(schema)
         response = urllib.request.urlopen(req)
+
+    nameExist = name != ""
 
     info("Parsing schema")
     # Note that JSON is valid YAML, so we can use the YAML parser whether
@@ -120,108 +132,64 @@ def default(output, schema, prefix, stand_alone, expanded, kubernetes, strict):
 
     types = []
 
-    info("Generating individual schemas")
+    # Store a specific schema into a file 
     if version < "3":
         components = data["definitions"]
     else:
         components = data["components"]["schemas"]
 
-    for title in components:
-        kind = title.split(".")[-1].lower()
-        if kubernetes:
-            group = title.split(".")[-3].lower()
-            api_version = title.split(".")[-2].lower()
-        specification = components[title]
-        specification["$schema"] = "http://json-schema.org/schema#"
+    if nameExist: # components[name]
+        specification = components[name]
         specification.setdefault("type", "object")
 
-        if strict:
-            specification["additionalProperties"] = False
+        # If references should be populated into the file
+        if include_references:
+            references = [name]
+            references = retrieve_all_references(references, specification, components, version)
+            for reference in references:
+                if not name is reference:
+                    specification[reference] = process_specification(kubernetes, reference, components, stand_alone, prefix, version, nameExist, output, strict)
+        
+        specification = process_specification(kubernetes, name, components, stand_alone, prefix, version, nameExist, output, strict)
+        specification["$schema"] = "http://json-schema.org/schema#"
 
-        if kubernetes and expanded:
-            if group in ["core", "api"]:
-                full_name = "%s-%s" % (kind, api_version)
-            else:
-                full_name = "%s-%s-%s" % (kind, group, api_version)
-        else:
-            full_name = kind
+        full_name = get_full_name(name, kubernetes, stand_alone, expanded)
 
-        types.append(title)
+        with open("%s/%s.json" % (output, full_name), "w") as schema_file:
+            debug("Generating %s.json" % full_name)
+            schema_file.write(json.dumps(specification, indent=2))
+    # Store all schemas into individual files 
+    else:
+        info("Generating individual schemas")
+        
+        for title in components:
+            types.append(title)
 
-        try:
-            debug("Processing %s" % full_name)
+            full_name = get_full_name(title, kubernetes, stand_alone, expanded)       
 
-            # These APIs are all deprecated
-            if kubernetes:
-                if title.split(".")[3] == "pkg" and title.split(".")[2] == "kubernetes":
-                    raise UnsupportedError(
-                        "%s not currently supported, due to use of pkg namespace"
-                        % title
+            try:
+                debug("Processing %s" % full_name)
+                specification = process_specification(kubernetes, title, components, stand_alone, prefix, version, nameExist, output, strict)
+
+                with open("%s/%s.json" % (output, full_name), "w") as schema_file:
+                    debug("Generating %s.json" % full_name)
+                    schema_file.write(json.dumps(specification, indent=2))
+            except Exception as e:
+                error("An error occured processing %s: %s" % (full_name, e))
+
+        with open("%s/all.json" % output, "w") as all_file:
+            info("Generating schema for all types")
+            contents = {"oneOf": []}
+            for title in types:
+                if version < "3":
+                    contents["oneOf"].append(
+                        {"$ref": "%s#/definitions/%s" % (prefix, title)}
                     )
-
-            # This list of Kubernetes types carry around jsonschema for Kubernetes and don't
-            # currently work with openapi2jsonschema
-            if (
-                kubernetes
-                and stand_alone
-                and kind
-                in [
-                    "jsonschemaprops",
-                    "jsonschemapropsorarray",
-                    "customresourcevalidation",
-                    "customresourcedefinition",
-                    "customresourcedefinitionspec",
-                    "customresourcedefinitionlist",
-                    "customresourcedefinitionspec",
-                    "jsonschemapropsorstringarray",
-                    "jsonschemapropsorbool",
-                ]
-            ):
-                raise UnsupportedError("%s not currently supported" % kind)
-
-            updated = change_dict_values(specification, prefix, version)
-            specification = updated
-
-            if stand_alone:
-                base = "file://%s/%s/" % (os.getcwd(), output)
-                specification = JsonRef.replace_refs(
-                    specification, base_uri=base)
-
-            if "additionalProperties" in specification:
-                if specification["additionalProperties"]:
-                    updated = change_dict_values(
-                        specification["additionalProperties"], prefix, version
+                else:
+                    contents["oneOf"].append(
+                        {"$ref": (title.replace("#/components/schemas/", "") + ".json")}
                     )
-                    specification["additionalProperties"] = updated
-
-            if strict and "properties" in specification:
-                updated = additional_properties(specification["properties"])
-                specification["properties"] = updated
-
-            if kubernetes and "properties" in specification:
-                updated = replace_int_or_string(specification["properties"])
-                updated = allow_null_optional_fields(updated)
-                specification["properties"] = updated
-
-            with open("%s/%s.json" % (output, full_name), "w") as schema_file:
-                debug("Generating %s.json" % full_name)
-                schema_file.write(json.dumps(specification, indent=2))
-        except Exception as e:
-            error("An error occured processing %s: %s" % (kind, e))
-
-    with open("%s/all.json" % output, "w") as all_file:
-        info("Generating schema for all types")
-        contents = {"oneOf": []}
-        for title in types:
-            if version < "3":
-                contents["oneOf"].append(
-                    {"$ref": "%s#/definitions/%s" % (prefix, title)}
-                )
-            else:
-                contents["oneOf"].append(
-                    {"$ref": (title.replace("#/components/schemas/", "") + ".json")}
-                )
-        all_file.write(json.dumps(contents, indent=2))
+            all_file.write(json.dumps(contents, indent=2))
 
 
 if __name__ == "__main__":
