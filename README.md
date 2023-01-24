@@ -1,44 +1,54 @@
 
 
-# Forked from openapi2jsonschema
+# Forked from openapi2jsonschema project
 https://github.com/instrumenta/openapi2jsonschema
 
-# openapi2jsonschemasinglefile
+# openapi2jsonschemasingleschema
 
 A utility to extract [JSON Schema](http://json-schema.org/) from a
 valid [OpenAPI](https://www.openapis.org/) specification.
 
 With this forked extension you can generate to a single file instead of multiple once
 
-## Why
+## Why the fork
 
-openapi2jsonschema is a great tool. But I required the schema to be generated into a single schema file with the references with the single file.
+openapi2jsonschema is a great tool, but have not been updated in a long time. I also required the schema to be generated into a single schema file with the references included into the file.
 
+
+## Requirements
+
+Install pip if you don't have it. Follow the guide below:
+https://pip.pypa.io/en/stable/installation/
 
 ## Installation
 
-`openapi2jsonschemasinglefile` is implemented in Python. Assuming you have a
-Python intepreter and pip installed you should be able to install with:
-
+1. Clone down the project to your local directory.
+2. In the terminal go to the directory where the folder `openapi2jsonschemasingleschema` exist 
+3. Run the command
 ```
-pip install openapi2jsonschemasinglefile
+pip install -e openapi2jsonschemasingleschema
 ```
 
-This has not yet been widely tested and is currently in a _works on my
-machine_ state.
-
+*Since we use the `-e option` when we install it locally, it becomes important that you don't more the folder after installation.* *If you move it you need to reinstall it again. I might deploy it into PIP so you don't need to install it locally in* *the future. *
 
 ## Usage
 
-The simplest usage is to point the `openapi2jsonschema` tool at a URL
-containing a JSON (or YAML) OpenAPI definition like so:
+**TMF621 - Trouble Ticket example**
 
 ```
-openapi2jsonschema https://raw.githubusercontent.com/kubernetes/kubernetes/master/api/openapi-spec/swagger.json
+openapi2jsonschemasingleschema -o schemas/tmf621 -n "TroubleTicket" --include-references https://tmf-open-api-table-documents.s3.eu-west-1.amazonaws.com/OpenApiTable/4.0.0/swagger/TMF621-TroubleTicket-v4.0.0.swagger.json
 ```
 
-This will generate a set of schemas in a `schemas` directory. The tool
-provides a number of options to modify the output:
+This will generate the TroubleTicket schema and all it's references into a single file
+
+
+**TMF622 - Product Order example**
+
+```
+openapi2jsonschemasingleschema -o schemas/tmf622 -n "ProductOrder" https://tmf-open-api-table-documents.s3.eu-west-1.amazonaws.com/OpenApiTable/4.0.0/swagger/TMF622-ProductOrder-v4.0.0.swagger.json
+```
+
+This will generate the ProductOrder schema but with no references into a single file
 
 ```
 $ openapi2jsonschema --help
@@ -59,14 +69,4 @@ Options:
   --help                Show this message and exit.
 ```
 
-
-## Example
-
-My specific usecase was being able to validate a Kubernetes
-configuration file without a Kubernetes client like `kubectl` and
-without the server. For that I have a bash script,
-[available here](https://github.com/instrumenta/kubernetes-json-schema/blob/master/build.sh).
-
-The output from running this script can be seen in the accompanying
-[instrumenta/kubernetes-json-schema](https://github.com/instrumenta/kubernetes-json-schema).
 
